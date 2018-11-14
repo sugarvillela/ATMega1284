@@ -1,100 +1,90 @@
-#include <stdio.h>
+//#include <stdio.h>
+#include <avr/io.h>
 #include "refclock.h"
-#include "lcddual.h"// uchar; delete this
+#include "lcddual.h"
+#include "UT.h"
 
-#define RFC_PERIOD	10
-
+enum rfc_states { OFF, ON };//period = 10 ms
+	
 typedef struct {
-	ushort raw;
+	uchar enable;	//on off
+	ushort raw;		//total 100th's of a second since start
 	uchar min;
 	uchar sec;
-	uchar frame;
+	uchar frame;	//10th's of a second since second
+	int state;
 } referenceClock;
+referenceClock refclock;
 
-referenceClock refClock;
+void refclockInit(){
+	refclock.min=0;
+	refclock.sec=0;
+	refclock.frame=0;//100 frames/sec
+	refclock.raw=0;
+	refclock.state=OFF;
+}
+void zeroRefclock(){
+	refclockInit();
+}
+void refclockOn(){
+	refclock.state=ON;
+}
+void refclockOff(){
+	refclock.state=OFF;
+}
+unsigned char refclockMark(){//true on second mark
+	return refclock.frame<10;
+}
+
+int refclock_tick( int state ){
+	switch(refclock.state) {
+		case OFF:
+			return 0;
+		case ON:
+			refclock.frame++;
+			refclock.raw++;
+			if( refclock.frame==100 ){//increment seconds
+				refclock.sec++;
+				refclock.frame=0;
+				if( refclock.sec==60 ){//increment minutes
+					refclock.min++;
+					refclock.sec=0;
+				}
+			}
+	}
+	return 0;
+}
 
 ushort getTime(){
-    return refClock.raw;
+	return refclock.raw;
 }
 void getTimeMSF( char buf[] ){
-    uchar iTo=0, iFrom;
-    uchar nBuf[4];
-    nToChars( (ushort)refClock.min, nBuf );
-    if(refClock.min<10){
-        buf[iTo++]='0';
-    }
-    for( iFrom=0;iFrom<4;iFrom++){
-        if( !nBuf[iFrom] ){ break; }
-        buf[iTo++]=nBuf[iFrom];
-    }
-    buf[iTo++]=':';
-    nToChars( (ushort)refClock.sec, nBuf );
-    if(refClock.sec<10){
-        buf[iTo++]='0';
-    }
-    //printf("sec=%d, nBuf=%s\n", refClock.sec, nBuf );
-    for( iFrom=0;iFrom<4;iFrom++){
-        if( !nBuf[iFrom] ){ break; }
-        buf[iTo++]=nBuf[iFrom];
-    }
-    buf[iTo++]=':';
-    nToChars( (ushort)refClock.frame, nBuf );
-    if(refClock.frame<10){
-        buf[iTo++]='0';
-    }
-    //printf("frame=%d, nBuf=%s\n", refClock.frame, nBuf );
-    for( iFrom=0;iFrom<4;iFrom++){
-        buf[iTo++]=nBuf[iFrom];
-        if( !nBuf[iFrom] ){ break; }
-    }
-}
-void refclockInit(){
-    printf("refclock init\n");
-	refClock.min=0;
-	refClock.sec=0;
-	refClock.frame=0;//100 frames/sec
-	refClock.raw=0;
-}
-/* State machine tick function */
-enum rfc_states { RFC_INIT, RFC_COUNT };//period = 10 ms
-int refClock_tick( int state ){
-    //printf("refclock init???\n");
-    //refclockInit();
-	switch(state) {
-		case RFC_INIT:
-		    refclockInit();
-		    state=RFC_COUNT;
-		    break;
-		case RFC_COUNT:
-        	refClock.frame+=RFC_PERIOD;
-        	refClock.raw+=RFC_PERIOD;
-            if( refClock.frame ==100 ){
-                refClock.sec++;
-                refClock.frame=0;
-            }
-            if( refClock.sec==60 ){
-                refClock.min++;
-                refClock.sec=0;
-            }
-		    break;
-		default:
-		    state=RFC_INIT;
-			break;
+	uchar iTo=0, iFrom;
+	uchar nBuf[4];
+	nToChars( (ushort)refclock.min, nBuf );
+	if(refclock.min<10){
+		buf[iTo++]='0';
 	}
-
-	return state; 
-}
-
-void refClockTest(){
-	int i, state=-1;
-	unsigned char buf[16];
-    for( i=1;i<3000;i++){
-    	state=refClock_tick( state );
-		if( i%100==0){
-			getTimeMSF( buf );
-			printf("====================\n");
-			printf("%d\n", getTime());
-			printf("%s\n", buf);
-		}
-    }
+	for( iFrom=0;iFrom<4;iFrom++){
+		if( !nBuf[iFrom] ){ break; }
+		buf[iTo++]=nBuf[iFrom];
+	}
+	buf[iTo++]=':';
+	nToChars( (ushort)refclock.sec, nBuf );
+	if(refclock.sec<10){
+		buf[iTo++]='0';
+	}
+	for( iFrom=0;iFrom<4;iFrom++){
+		if( !nBuf[iFrom] ){ break; }
+		buf[iTo++]=nBuf[iFrom];
+	}
+	buf[iTo++]=':';
+	nToChars( (ushort)refclock.frame, nBuf );
+	if(refclock.frame<10){
+		buf[iTo++]='0';
+	}
+	for( iFrom=0;iFrom<4;iFrom++){
+		buf[iTo++]=nBuf[iFrom];
+		if( !nBuf[iFrom] ){ break; }
+	}
 }

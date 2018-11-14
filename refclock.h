@@ -1,10 +1,15 @@
-#ifndef REFCLOCK_H
-#define REFCLOCK_H
+#ifndef REFCLOCK_H_
+#define REFCLOCK_H_
+
+#define REFCLK_PERIOD 50 //10 ms
+
+void refclockOn();
+void refclockOff();
+void zeroRefclock();
+unsigned char refclockMark();
 
 unsigned short getTime();
 void getTimeMSF( char buf[] );
-int refClock_tick( int state );
+int refclock_tick( int state );
 
-void refClockTest();
-
-#endif
+#endif /* REFCLOCK_H_ */
