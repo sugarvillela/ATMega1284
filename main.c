@@ -8,7 +8,6 @@
 //#include "spi.h"
 //#include "readWrite.h"
 #include "lcddual.h"
-//#include "io.h"
 #include "shiftreg16.h"
 #include "ledmatrix.h"
 #include "buttonbus.h"
@@ -66,55 +65,8 @@ int pinOut_tick( int state ){
 	////dataD=0;
 	return state;
 }
-
 void voidFunct(){
 	msgWrite( 0, "functCalled!", MSG_LONG );
-}
-
-#define met44Size	32
-
-void met44(){//set test size t0 48
-	uchar p1[met44Size];
-	char* pat1[met44Size]={
-		"x-------",
-		"-x------",
-		"--x-----",
-		"---x----",
-		"--------",
-		"--------",
-		"--------",
-		"--------",
-		
-		"-------x",
-		"------x-",
-		"-----x--",
-		"----x---",
-		"--------",
-		"--------",
-		"--------",
-		"--------",
-
-		"--------",
-		"--------",
-		"--------",
-		"--------",
-		"----x---",
-		"-----x--",
-		"------x-",
-		"-------x",
-
-		"--------",
-		"--------",
-		"--------",
-		"--------",
-		"---x----",
-		"--x-----",
-		"-x------",
-		"x-------"
-		
-	};
-	toBinArr( pat1, p1, met44Size, 'x');
-	matrixSetPattern( p1, met44Size, 10, 255 );
 }
 #define NUM_TASKS	10
 
