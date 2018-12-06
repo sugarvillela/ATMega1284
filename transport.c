@@ -1,144 +1,209 @@
-//#include <stdio.h>
+/****************************************************************************
+    This file is part of "Midi Record/Play/Overdub With 5-Pin Connections", 
+	"MRecord" for short, Copyright 2018, Dave S. Swanson.
+
+    MRecord is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    MRecord is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with MRecord.  If not, see <https://www.gnu.org/licenses/>.
+*****************************************************************************/
+
 #include <avr/io.h>
 #include "transport.h"
 #include "refclock.h"
 #include "lcddual.h"
 #include "buttonbus.h"
-#include "menu.h"//for binding stop press event to menu
+#include "menu.h"			//for binding stop press event to menu
 #include "UT.h"
+#include "midiin.h"
+
+/*	Transport syncs with refclock.h and midiin.h. and with beep_tick
+	It functions as:
+	1.	a metronome: runs beep_tick state; counts and displays M:B time
+	2.	interface for controlling clock and midi
+*/
 
 #define MAX_BEATS   8       //related to time signatures
-#define TPS         1000L   //number of ticks per second (clock speed, period)
 #define BEEP_DUR    40		//length of beeps (milliseconds) 
 							//Set much lower than least expected beat duration
+#define TPS			1000L   //number of ticks per second (clock speed, period)
+
+#define SKIP		10      //Rewind and FF amount
 #define OUTPORT PORTB								
 
 typedef struct {
+	/* For time-to-beat mapping */
 	float b[MAX_BEATS];
 	uchar tempo;                //beats per minute
 	uchar tsig1;                //number of beats per bar
 	uchar tsig2;                //bar length
 	uchar currMeasure;          //for display
 	uchar currBeat;
+	
+	/* Display and metronome sound */
+	char flasher[5];			//Flash PLAY or REC on LCD
 	uchar beepMaskPlay;			//0x18 for light and beep, 0x10 for light only
 	uchar beepMaskRec;
-	uchar beepMask;				
+	uchar beepMask;	
+	
+	void (*dispTime)();			//Show M:B or raw time on LCD		
 	int state;
-	char flasher[5];			//Flash PLAY or REC
+	int beepState;
+	uchar enable;				//for disabling without disturbing the states
 	//uchar recording;
 } metronome;
 metronome met;
 
-int beepState;
+/* Not using PWM; this implements high and low metronome sound */
 uchar beepCount;
 enum beepStates{ BEEPOFF, HION, HIOFF, LOON1, LOON2, LOOFF1, LOOFF2 };
-int beep_tick( int state ){
-	state=beepState;
-	switch(state){
+void beep_tick(){
+	switch(met.beepState){
 		case BEEPOFF:
-			return state;
+			return;
 		/* High Cycle */
 		case HION:
 			OUTPORT |= met.beepMask;
-			state=HIOFF;
+			met.beepState=HIOFF;
 			break;
 		case HIOFF:
 			OUTPORT &=(uchar)~met.beepMask;
-			state=HION;
+			met.beepState=HION;
 			break;
 		/* Low Cycle */
 		case LOON1:
 			OUTPORT |= met.beepMask;
-			state=LOON2;
+			met.beepState=LOON2;
 			break;
 		case LOON2:
-			state=LOOFF1;
+			met.beepState=LOOFF1;
 			break;
 		case LOOFF1:
 			OUTPORT &=(uchar)~met.beepMask;
-			state=LOOFF2;
+			met.beepState=LOOFF2;
 			break;
 		case LOOFF2:
-			state=LOON1;
+			met.beepState=LOON1;
 			break;
 	}
 	if( ++beepCount>BEEP_DUR ){ 
 		CLR_TWO( OUTPORT, 3 );
-		return (beepState=BEEPOFF); 
+		met.beepState=BEEPOFF; 
 	}
-	return (beepState=state);
 }
-
 void beepHi(){
-	beepState=HION;
+	met.beepState=HION;
 	beepCount=0;
 }
 void beepLo(){
-	beepState=LOON1;
+	met.beepState=LOON1;
 	beepCount=0;
 }
 
-static char bufMB[10];				//measure:beat display
-static char bufMSF[10];				//measure:time display
+/* Display Functions */
 
+/* Choice of wrappers for LCD1 display; pointer set by menu */
+static char dispBuf[10];
+void dispMS(){
+	getTimeMSF( dispBuf );//Minutes: Seconds
+	LCD_Disp( 17, (const uchar* )dispBuf, 1 );
+}
+void dispRaw(){
+	nToChars( getTime(), (uchar*)dispBuf );//raw
+	LCD_Disp( 17, (const uchar* )dispBuf, 1 );
+}
+
+/* this updates on each metronome beat */
 void dispMetStatus(){
+	/* Left Screen */
+	static uchar last=1;
+	static uchar curr;
+	curr=((met.currBeat-1)<<2)+1;
+	LCD_Disp( last, (const uchar*)".", 0 );
+	LCD_Disp( curr, (const uchar*)"|", 0 );
+	last=curr;
+	LCD_Cursor( 1, 1 );
+	
 	/* Right Screen */
 	static uchar flash=1;
-	getTimeMB( (uchar*)bufMB );
-	getTimeMSF( bufMSF );
-	if( flash ){
-		simpleWrite_123( 1, bufMB, met.flasher, bufMSF );
+	getTimeMB( (uchar*)dispBuf );//Measures: Beats
+	LCD_Disp( 1, (const uchar* )dispBuf, 1 );
+	
+	if( flash ){//REC or PLAY
+		LCD_Disp( 9, (const uchar* )met.flasher, 1 );
+		flash=0;
 	}
 	else{
-		simpleWrite_123( 1, bufMB, "    ", bufMSF );
+		LCD_Disp( 9, (const uchar* )"    ", 1 );
+		flash=1;
 	}
-	flash=!flash;
-	/* Left Screen */
+	met.dispTime();
 }
-enum metStates{ OFF, ON, ACCENT, BEAT, COUNT };
 
-int metronome_tick( int state ){
-	state=met.state;
+/* this is triggered after welcome screen finishes */
+void startupDisplay(){
+	msgUnbindDropEvent( 0 );
+	//zeroRefclock();
+	//met.currMeasure=1;
+	//met.currBeat=1;
+	//cp( met.flasher, "Stop" );
+	transportOn();
+}
+void initLeftScreen(){
+	/*	To save tick time, dispMetStatus() only writes a '|' and a '.'
+		The row of dots is written here on startup */
+	uchar i;
+	for( i=0; i<met.tsig1; i++ ){
+		LCD_Disp( (i<<2)+1, (const uchar*)"....", 0 );
+	}
+}
 
-	static uchar i=0;						//index of met.b for beat times
+/* State machine */
+enum metStates{ START, ACCENT, BEAT, COUNT };
+void metronome_tick(){
+	static uchar i=0;					//index of met.b for beat times
 	static float count=0;				//for counting up to beat times
-	switch (state){
-		case BYP:
-			return state;
-		case OFF:
-			break;
-		case ON:
+	if(!met.enable){ return; }
+	/* Two ways of starting: from top of measure or resume in measure 
+		set START for the first case, otherwise leave state alone */
+	switch (met.state){
+		case START:
 			i=0;
 			count=0;
-			state=ACCENT;
+			met.state=ACCENT;
 			break;
 		case ACCENT:
-			state=COUNT;
+			met.state=COUNT;
 			break;
 		case BEAT:
-			state=COUNT;
+			met.state=COUNT;
 			break;
 		case COUNT:
 			if( (count+5)>met.b[i] ){
 				i++;
 				if( i>=met.tsig1 ){
-					state=ACCENT;
+					met.state=ACCENT;
 					met.currMeasure++;
 				}
 				else{
-					state=BEAT;
+					met.state=BEAT;
 				}
 			}
 			break;
 		default:
-			state=OFF;
-			i=0;
-			count=0;
+			met.state=START;
 			break;
 	}
-	switch (state){
-		case OFF:
-		case ON:
+	switch (met.state){
+		case START:
 		case COUNT:
 			break;
 		case ACCENT:
@@ -148,7 +213,13 @@ int metronome_tick( int state ){
 			beepHi();
 			/* Display metronome time */
 			dispMetStatus();
-			/* Reset local vars for next measure */
+			/*	Reset local vars for next measure:
+				Notice that it is not set to 0. Since there is
+				overrun in detecting the transition point, it seems
+				better to keep the difference, to approach the next
+				point more accurately. In testing, this method 
+				decreased jitter
+			 */
 			count-=met.b[i-1];
 			i=0;
 			break;
@@ -161,15 +232,11 @@ int metronome_tick( int state ){
 			dispMetStatus();
 			break;
 		default:
-			//transportInit();
-			state=OFF;
-			i=0;
-			count=0;
 			break;
 	}
 	count+=10;
-	return ( met.state=state );
 }
+
 /* Mutators */
 void transportInit(){
 	/* set defaults */
@@ -177,81 +244,99 @@ void transportInit(){
 	met.beepMaskRec=0x18;
 	met.tempo=120;
 	setTimeSignature( FOUR_FOUR );
+	met.dispTime=&dispMS; 
 	/* Set up transport */
-	met.state=OFF;
-	beepState=BEEPOFF;
+	met.enable=0;
+	met.beepState=BEEPOFF;
 	/* Zero transport */
+	met.state=START;
 	zeroRefclock();
 	met.currMeasure=1;
 	met.currBeat=1;
 	cp( met.flasher, "Stop" );
 }
-void startupDisplay(){
-	msgUnbindDropEvent( 0 );
-	transportOn();
-	transportTop();
-}
+
 void transportOn(){
+	msgUnbindDropEvent( 0 );
 	bBusInit();
 	LCD_ClearScreen( 0 );
 	LCD_ClearScreen( 1 );
-	msgQueueOn( 0 );
-	msgWrite( 0, "Ready", MSG_SHORT );
-	msgQueueOff( 1 );
-    bindPressEvent( 0, &transportStop );
-    bindPressEvent( 1, &transportRW );
-    bindPressEvent( 2, &transportFF );
-    bindPressEvent( 3, &play );
-	bindDoubleEvent( 3, &record );
-	bindHoldEvent( 0, &menuOn );
-	//cp( met.flasher, "Stop" );
-	//dispMetStatus();
+    bindPressEvent( 0, &transportStop );// tap to stop
+	bindHoldEvent( 0, &menuOn );		// hold to open menu
+    bindPressEvent( 2, &transportRW );	// tap to jump back several measures per #define SKIP
+    bindHoldEvent( 2, &transportTop );	// hold to jump back to top
+	bindPressEvent( 1, &record );		// tap to record
+    bindPressEvent( 3, &play );			// tap to play
+	bindDoubleEvent( 3, &record );		// also double tap to record
+	/* Left Screen needs to be initialized with dots;
+		Right screen init to curr measure and time */
+	initLeftScreen();
+	dispMetStatus();	
 }
 void play(){
-	msgWrite( 0, "Play", MSG_SHORT );
 	met.beepMask=met.beepMaskPlay;
 	cp( met.flasher, "Play" );
-	if( met.state==OFF ){
-		met.state=ON;
-		refclockOn();
-	}
+	//if( met.state==OFF ){//preserve the current beat count for resuming
+		//met.state=ON;
+	//}
+	met.enable=1;
+	refclockOn();
+	midiPlay();
 }
 void record(){
-	msgWrite( 0, "Record", MSG_SHORT );
+	msgBindDropEvent( 0, &initLeftScreen );
+	msgWriteErr( 0, "Record", MSG_SHORT );
 	met.beepMask=met.beepMaskRec;
 	cp( met.flasher, "Rec " );
-	bReset( 3 );//clear count so it doesn't call on every click
-	if( met.state==OFF ){
-		met.state=ON;
-		refclockOn();
-	}
+	bReset( 3 );//clear button count so it doesn't call on every subsequent click
+	//if( met.state==OFF ){
+		//met.state=ON;
+	//}
+	met.enable=1;
+	refclockOn();
+	midiRec();
 }
 void transportStop(){
-	msgWrite( 0, "Stop", MSG_SHORT );
-	met.state=OFF;
+	//met.state=OFF;
+	met.enable=0;
 	refclockOff();
+	midiOff();
 	cp( met.flasher, "Stop" );
-	OUTPORT &=0xE7;
+	OUTPORT &=0xE7;				//kill the beep port
 	dispMetStatus();
 	bReset( 3 );
 }
 void transportTop(){
+	bReset( 0 );//clear count so it doesn't call on every subsequent click
+	met.state=START;
 	zeroRefclock();
+	midiTop();
 	met.currMeasure=1;
 	met.currBeat=1;
 	cp( met.flasher, "Stop" );
+	LCD_ClearScreen( 1 );
 	dispMetStatus();
 }
 void transportRW(){
-	
+	transportStop();
+	uchar prev=met.currMeasure;
+	met.currMeasure-=SKIP;
+	if( met.currMeasure==0 || met.currMeasure > 0xFF-SKIP ){
+		transportTop();
+	}
+	else{//( ratio: old position / new position ) * oldTime
+		met.state=START;
+		met.currBeat=1;
+		refclockOverride( (ushort)(met.currMeasure/(float)prev)*getTime() );
+	}
 }
 void transportFF(){
 	
 }
 void setTempo( uchar tempo ){
 	/* Set first and last beat */
-	met.b[0]=(TPS*120)/(tempo*met.tsig2/(float)2);
-	met.b[met.tsig2-1]=(TPS*120)/(float)(tempo/(float)2);
+	met.b[0]=			(TPS*120)/(tempo*met.tsig2/(float)2);
+	met.b[met.tsig2-1]=	(TPS*120)/(float)(tempo/(float)2);
 	uchar i;
 	for( i=1; i<met.tsig2-1; i++ ){
 		met.b[i]=((float)i+1)*met.b[0];
@@ -261,28 +346,32 @@ void setTempo( uchar tempo ){
 void setTimeSignature( int tsig ){//THREE_FOUR, FOUR_FOUR, SIX_EIGHT
 	switch (tsig){
 		case THREE_FOUR:
-		met.tsig1=3;
-		met.tsig2=4;
-		break;
+			met.tsig1=3;
+			met.tsig2=4;
+			break;
 		case FOUR_FOUR:
-		met.tsig1=4;
-		met.tsig2=4;
-		break;
+			met.tsig1=4;
+			met.tsig2=4;
+			break;
 		case SIX_EIGHT:
-		met.tsig1=6;
-		met.tsig2=8;
-		break;
+			met.tsig1=6;
+			met.tsig2=8;
+			break;
 		default:
-		break;
+			break;
 	}
 	setTempo( met.tempo );//update values
 }
+
+/* Menu manipulators */
+
 void toggleBeepOn(){
 	met.beepMaskPlay=( met.beepMaskPlay==0x18 )? 0x10 : 0x18;
 }
-void beepPref( uchar onOff ){
-	met.beepMaskPlay=( onOff )? 0x18 : 0x10;
+void toggleDispMS(){
+	met.dispTime=( met.dispTime==&dispMS )? &dispRaw : &dispMS; 
 }
+
 /* Accessors */
 void getTimeSig_str( uchar buf[] ){
 	buf[0]=met.tsig1+'0';
@@ -296,6 +385,9 @@ void getTempo_str( uchar buf[] ){
 uchar getBeepOn(){
 	return ( met.beepMaskPlay==0x18 )? 1 : 0;
 }
+uchar getDispMSOn(){
+	return ( met.dispTime==&dispMS ); 
+}
 void getTimeMB( uchar buf[] ){
 	uchar j=0;
 	uchar nbuf[4];
@@ -308,3 +400,9 @@ void getTimeMB( uchar buf[] ){
 	buf[j+1]=met.currBeat+'0';
 	buf[j+2]='\0';
 }
+unsigned char getTempo(){ return met.tempo; }
+unsigned char getTsig1(){ return met.tsig1; }
+unsigned char getTsig2(){ return met.tsig2; }
+float getBeatValue(){ return met.b[0]; }
+unsigned char getCurrBeat(){ return met.currBeat; }
+unsigned char getCurrMeasure(){ return met.currMeasure; }

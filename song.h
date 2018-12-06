@@ -16,18 +16,20 @@
     along with MRecord.  If not, see <https://www.gnu.org/licenses/>.
 *****************************************************************************/
 
-#ifndef REFCLOCK_H_
-#define REFCLOCK_H_
+#ifndef SONG_H_
+#define SONG_H_
 
-#define REFCLK_PERIOD 50 //10 ms
+#define TITLE_LEN			9
+#define TITLE_MIN_LEN		3
 
-void refclockOn();
-void refclockOff();
-void zeroRefclock();
-void refclockOverride( unsigned short setRaw );
+/* Accessors */
+void song_getTitle( char buf[] );
+unsigned char song_isTitled();
 
-unsigned short getTime();
-void getTimeMSF( char buf[] );
-void refclock_tick();
+/* Mutators */
+void song_setTitle( char buf[] );
+void song_serialize();
+void song_load();
+void song_init();
 
-#endif /* REFCLOCK_H_ */
+#endif /* SONG_H_ */

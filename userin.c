@@ -1,13 +1,32 @@
+/****************************************************************************
+    This file is part of "Midi Record/Play/Overdub With 5-Pin Connections", 
+	"MRecord" for short, Copyright 2018, Dave S. Swanson.
+
+    MRecord is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    MRecord is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with MRecord.  If not, see <https://www.gnu.org/licenses/>.
+*****************************************************************************/
+
 #include <avr/io.h>
 #include "userin.h"
 #include "buttonbus.h"
 #include "menu.h"
+#include "song.h"
 #include "lcddual.h"
 #include "UT.h"
 
 /*==========================User in: character entry==========================*/
 
-#define CONTENT_LEN 17
+#define CONTENT_LEN 9
 #define BLEFT		0
 #define BINC		1
 #define BDEC		2
@@ -21,24 +40,25 @@ typedef struct {
 	char content[CONTENT_LEN];
 	char curr;
 	uchar i;
+	void (*saveFunct)();
 
 } uinStruct;
 uinStruct uin;
 
-void writeUin(){
+void dispUin(){
 	uin.content[uin.i]=uin.curr;
 	uin.content[uin.i+1]='\0';
 	LCD_Disp( 9, (const uchar*)uin.content, 1 );
-	//printf("%-16s %-8s\n", uin.label, uin.content );
 }
 void uinBack(){
-	if( uin.i>1 ){
-		LCD_ClearScreen( 1 );
-		LCD_Disp( 1, (const uchar*)uin.label, 1 );
-		uin.content[uin.i]='\0';
-		uin.i--;
-		writeUin();
+	LCD_ClearScreen( 1 );
+	LCD_Disp( 1, (const uchar*)uin.label, 1 );
+	uin.content[uin.i]='\0';
+	uin.i--;
+	if(uin.i==(uchar)-1){
+		uin.i=0;
 	}
+	dispUin();
 }
 void uinInc(){//scroll ascii 0-9, A-Z
 	uin.curr++;
@@ -48,7 +68,7 @@ void uinInc(){//scroll ascii 0-9, A-Z
 	else if( uin.curr<'A' && uin.curr>'9' ){
 		uin.curr='A';
 	}
-	writeUin();
+	dispUin();
 	lastDn=0;
 }
 void uinDec(){
@@ -59,7 +79,7 @@ void uinDec(){
 	else if( uin.curr<'A' && uin.curr>'9' ){
 		uin.curr='9';
 	}
-	writeUin();
+	dispUin();
 	lastUp=0;
 }
 void uinIncFast(){//scroll ascii 0-9, A-Z
@@ -72,7 +92,7 @@ void uinIncFast(){//scroll ascii 0-9, A-Z
 	else if( uin.curr<'A' && uin.curr>'9' ){
 		uin.curr='A';
 	}
-	writeUin();
+	dispUin();
 	lastUp=inc;
 	lastDn=0;
 }
@@ -86,51 +106,59 @@ void uinDecFast(){
 	else if( uin.curr<'A' && uin.curr>'9' ){
 		uin.curr='9';
 	}
-	writeUin();
+	dispUin();
 	lastDn=dec;
 	lastUp=0;
 }
 void uinAdvance(){
 	if( uin.i< CONTENT_LEN-1 ){
 		uin.i++;
-		writeUin();
+		dispUin();
 	}
 }
 void uinSave(){
-	if( uin.i>1 ){
-		uin.i--;
-		uin.content[uin.i]='\0';
-		writeUin();
+	//if( uin.i>1 ){
+		//uin.i--;
+		//uin.content[uin.i]='\0';
+	//}
+	uin.content[uin.i]='\0';
+	unbindAll();
+	song_setTitle( uin.content );
+	song_serialize();
+	if( uin.saveFunct ){
+		uin.saveFunct();
 	}
-	uinOff();
 }
-
 void uinSetLabel( char label[] ){
 	cp( uin.label, label );
-	uinOff();
+	//uinOff();
 }
 void uinOn(){
-	//printf( "Quit Up Dwn Save\n");
 	LCD_ClearScreen( 0 );
 	LCD_ClearScreen( 1 );
 	//LCD_Disp( 1, (const uchar*)"Quit Up Dwn NextHoldNext=Save", 0 );
 	LCD_Disp( 1, (const uchar*)uin.label, 1 );
-	bindPressEvent( BLEFT,	&uinBack );
-	bindPressEvent( BINC,	&uinInc );
-	bindPressEvent( BDEC,	&uinDec );
-	bindPressEvent( BRIGHT, &uinAdvance );
-	bindHoldEvent( BLEFT,	&uinOff );
-	bindHoldEvent( BINC,	&uinIncFast );
-	bindHoldEvent( BDEC,	&uinDecFast );
-	bindHoldEvent( BRIGHT,	&uinSave );
+	bindPressEvent( BLEFT,	&uinBack	);	//move cursor left
+	bindPressEvent( BINC,	&uinInc		);	//A to B to C etc
+	bindPressEvent( BDEC,	&uinDec		);	//C to B to A etc
+	bindPressEvent( BRIGHT, &uinAdvance );	//add a character
+	bindHoldEvent(	BLEFT,	&uinOff		);	//back to menu
+	bindHoldEvent(	BINC,	&uinIncFast );
+	bindHoldEvent(	BDEC,	&uinDecFast );
+	bindHoldEvent(	BRIGHT,	&uinSave	);
 	lastUp=0;
 	lastDn=0;
-	writeUin();
+	/* Reset display in case this is not the first visit */
+	uin.curr='A';
+	uin.i=0;
+	uin.content[0]='\0';
+	dispUin();
 }
 void uinOff(){
-	//LCD_Disp( 1, (const uchar*)"uinOff", 1 );
-	//LCD_ClearScreen();
 	menuOn();
+}
+void uinGetVal( char buf[] ){//17 characters
+	cp( buf, uin.content );
 }
 
 /*==========================User in: numeric entry============================*/
@@ -140,28 +168,27 @@ typedef struct {
 	uchar val;
 	uchar lobound;
 	uchar hibound;
+	void (*saveFunct)();
 	
 } numinStruct;
 numinStruct numin;
 
-void writeNumin(){
+void dispNumin(){
 	uchar buf[4];
 	nToChars_fixed( 3, numin.val, buf );
 	LCD_Disp( 9, (const uchar*)buf, 1 );
-	//printf("%-8s %-8s\n", numin.label, buf );
 }
-
 void numinInc(){
 	if( numin.val<numin.hibound ){
 		numin.val++;
-		writeNumin();
+		dispNumin();
 	}
 	lastDn=0;
 }
 void numinDec(){
 	if( numin.val>numin.lobound ){
 		numin.val--;
-		writeNumin();
+		dispNumin();
 	}
 	lastUp=0;
 }
@@ -172,7 +199,7 @@ void numinIncFast(){
 	if( numin.val>numin.hibound ){
 		numin.val=numin.hibound;
 	}
-	writeNumin();
+	dispNumin();
 	lastUp=inc;
 	lastDn=0;
 }
@@ -183,14 +210,14 @@ void numinDecFast(){
 	if( numin.val<numin.lobound ){
 		numin.val=numin.lobound;
 	}
-	writeNumin();
+	dispNumin();
 	lastDn=dec;
 	lastUp=0;
 }
-
 void numinSave(){
-	//printf( "Num in Save\n");
-	numinOff();
+	if( numin.saveFunct ){
+		numin.saveFunct();
+	}
 }
 void numinSetLabel( char label[] ){
 	cp( numin.label, label );
@@ -204,7 +231,7 @@ void numinOn(){
 	LCD_ClearScreen( 1 );
 	//LCD_Disp( 1, (const uchar*)"Quit Up Dwn Save", 0 );
 	LCD_Disp( 1, (const uchar*)numin.label, 1 );
-	writeNumin();
+	dispNumin();
 
 	bindPressEvent( BLEFT,	&numinOff );
 	bindPressEvent( BINC,	&numinInc );
@@ -216,11 +243,11 @@ void numinOn(){
 	lastDn=0;
 }
 void numinOff(){
-	//LCD_Disp( 1, (const uchar*)"numinOff", 1 );
-	//LCD_ClearScreen();
 	menuOn();
 }
-
+unsigned char numinGetVal(){
+	return numin.val;
+}
 /*==========================User in: tap or clap==============================*/
 
 #define TPS         1000    //number of ticks per second at 10ms period
@@ -236,6 +263,7 @@ typedef struct {
 	uchar lobound;
 	uchar hibound;
 	uchar state;
+	void (*saveFunct)();
 } tapStruct;
 tapStruct tap;
 
@@ -247,18 +275,17 @@ void writeTap(){
 void tapEvent(){
 	if( tap.raw ){
 		tap.val=( tap.val )? ( tap.val+(TAP_C/tap.raw) )/2 : (TAP_C/tap.raw);
-		//printf("subsequent: ticks=%d, tempo=%d\n", tap.raw, tap.val );
 		writeTap();
 	}
 	else{//first call
-		//printf("initial: %d\n", tap.raw );
 		tap.state=ON;
 	}
 	tap.raw=0;
 }
 void tapSave(){
-	//printf( "Num in Save\n");
-	tapOff();
+	if( tap.saveFunct ){
+		tap.saveFunct();
+	}
 }
 void tapOn(){
 	LCD_ClearScreen( 0 );
@@ -277,16 +304,16 @@ void tapOn(){
 	bindPressEvent( BRIGHT, &tapSave );
 }
 void tapOff(){
-	//LCD_Disp( 1, (const uchar*)"tapOff", 1 );
-	//LCD_ClearScreen();
 	menuOn();
 }
+unsigned char tapGetVal(){
+	return tap.val;
+}
 
-int tap_tick( int state ){//a stopwatch
+void tap_tick(){//a stopwatch
 	if( tap.state ){
 		tap.raw+=TAP_PERIOD;
 	}
-	return 0;
 }
 
 /*==========================Shared Initializer================================*/
@@ -301,8 +328,6 @@ void uinInit(){
 	numin.hibound=240;
 	/* uin defaults */
 	cp( uin.label, "Title" );
-	uin.curr='A';
-	uin.i=0;
 	/* tap defaults */
 	tap.enable=0;
 	tap.raw=0;
@@ -310,16 +335,23 @@ void uinInit(){
 	tap.lobound=30;
 	tap.hibound=240;
 	tap.state=OFF;
+}
 
-	//test
-	//uchar i;
-	//for( i=0; i< 200; i++){
-		//tap_tick( 0 );
-		//if( i && i%6==0 ){
-			//tapEvent();
-		//}
-		////printf( "%c\n", uin.curr );
-	//}
+/*==========================Logistics=========================================*/
+
+void uinBindSaveEvent( void (*f)() ){
+	uin.saveFunct=f;
+}
+void numinBindSaveEvent( void (*f)() ){
+	numin.saveFunct=f;
+}
+void tapBindSaveEvent( void (*f)() ){
+	tap.saveFunct=f;
+}
+void uinUnbindAll(){
+	uin.saveFunct=0;
+	numin.saveFunct=0;
+	tap.saveFunct=0;
 }
 
 

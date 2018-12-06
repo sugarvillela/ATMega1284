@@ -1,7 +1,23 @@
+/****************************************************************************
+    This file is part of "Midi Record/Play/Overdub With 5-Pin Connections", 
+	"MRecord" for short, Copyright 2018, Dave S. Swanson.
+
+    MRecord is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    MRecord is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with MRecord.  If not, see <https://www.gnu.org/licenses/>.
+*****************************************************************************/
+
 #ifndef UT_H
 #define UT_H
-
-/* My code */
 
 #define uchar unsigned char
 #define uint unsigned int
@@ -28,6 +44,7 @@ void toBinArr( char* binIn[], uchar binOut[], uchar size, char one );
 
 unsigned char ab( char in );//absolute value
 unsigned char len( const char str[] );
+unsigned char sameString( char a[], char b[] );
 
 /* copy functions to leave c libraries out */
 void cp( char to[], char from[] );
@@ -52,6 +69,8 @@ void nToChars_digit( uchar in, uchar buf[] );
 void nToChars_fixed( uchar width, uchar in, uchar buf[] );
 /* Human-readable bool to "On" or "Off" */
 void onOff( uchar onOff, uchar buf[] );
+/* Progress bar (might be too quick to display)*/
+void progress( uchar state, ushort n );
 
 /* Code as given */
 void delay_ms(int miliSec);//from io.c

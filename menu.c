@@ -1,10 +1,29 @@
-//#include <stdio.h>
+/****************************************************************************
+    This file is part of "Midi Record/Play/Overdub With 5-Pin Connections", 
+	"MRecord" for short, Copyright 2018, Dave S. Swanson.
+
+    MRecord is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    MRecord is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with MRecord.  If not, see <https://www.gnu.org/licenses/>.
+*****************************************************************************/
+
 #include <avr/io.h>
 #include "menu.h"
 #include "buttonbus.h"
 #include "lcddual.h"
 #include "transport.h"
 #include "userin.h"
+#include "midiin.h"
+#include "song.h"
 #include "UT.h"
 
 /*	This is currently implemented as a two-D linked list 
@@ -12,38 +31,85 @@
 	Now each struct has 4 pointers.  If I replace the pointers with uchar array indexes
 	each struct will be 12 bytes smaller, assuming pointers are 4 bytes 
 	
-	Note indenting style to indicate menu structure
+	Note indenting style to illustrate menu structure
 */
+
 void menuUp();
 void menuDown();
 void menuLeft();
 void menuRight();
+void menuLeftRoot();
 
-/*	Value functions; not all menu items need to display a current value so some of these 
-	will be deleted 
+/* Utility scripts */
+void verboseScript(){
+	/*	This gives user a chance to take finger off button...really 
+		Otherwise it jumps right back to where it was */
+	menuLeftRoot();
+	msgBindDropEvent( 1, &menuOn );
+	msgWriteErr( 1, "Saved!", MSG_SHORT );
+}
+void tempoScript(){
+	//uchar newTempo=numinGetVal();			//get tempo from numin
+	//char buf[5];
+	//nToChars( newTempo, buf );
+	//msgWriteErr( 0, buf, MSG_LONG );
+	//
+	//nToChars( getTempo(), buf );
+	//msgBindDropEvent( 1, &menuOn );
+	//msgWriteErr( 1, buf, MSG_LONG );
+	writeNewTempo(  getTempo(), numinGetVal() );//get value from transport; change timestamps in midiin   getTempo(), newTempo 
+	setTempo( numinGetVal() );					//update in transport
+	menuLeftRoot();
+	menuWrite();
+}
+void tapScript(){
+	uchar newTempo=tapGetVal();				//get tempo from tap
+	writeNewTempo( getTempo(), newTempo );	//get value from transport; change timestamps in midiin
+	setTempo( newTempo );					//update in transport
+	menuLeftRoot();
+	menuWrite();
+}
+
+/*	Value functions; not all menu items need to display a current value so 
+	some menu items have null for value function pointer
 */
-void value_m_0_song( uchar buf[] ){ cp( (char*)buf, "Untitled" ); }//song name
-	void value_m_1_save( uchar buf[] ){ cp( (char*)buf, "Untitled" ); }//song name
+void value_m_0_song( uchar buf[] ){ song_getTitle( (char*)buf ); }//song name
 	void value_m_1_pResume( uchar buf[] ){ getTimeMB( buf ); }// play from current time
 	void value_m_1_playTop( uchar buf[] ){ cp( (char*)buf, "1:1" ); }
-	void value_m_1_rResume( uchar buf[] ){ getTimeMB( buf ); }// rec from current time
+	void value_m_1_rResume( uchar buf[] ){ getTimeMB( buf ); }// current measure:beat from transport
 	void value_m_1_recTop( uchar buf[] ){ cp( (char*)buf, "1:1" ); }
-	void value_m_1_tempo( uchar buf[] ){ getTempo_str( buf ); }//tempo from metronome
-	void value_m_1_tsig( uchar buf[] ){ getTimeSig_str( buf ); }//tsig from metronome	done
-	void value_m_1_quant( uchar buf[] ){ cp( (char*)buf, "1/4" ); }
-	void value_m_1_metOn( uchar buf[] ){ onOff( getBeepOn(), buf ); }//soundOn=1 from metronome
-	void value_m_1_array( uchar buf[] ){ onOff( 0, buf ); }//LEDShow=1 from letMatrix
+	void value_m_1_tempo( uchar buf[] ){ getTempo_str( buf ); }//tempo from transport
+	void value_m_1_tsig( uchar buf[] ){ getTimeSig_str( buf ); }//tsig from transport
+	void value_m_1_event( uchar buf[] ){ eventStatus( buf ); }//number of events, from midiin
+	void value_m_1_metOn( uchar buf[] ){ onOff( getBeepOn(), buf ); }//soundOn=1 from transport
+	void value_m_1_dispMS( uchar buf[] ){ onOff( getDispMSOn(), buf ); }//M:B time or raw time=1
 
 /*	Action functions; Only leaf items have actions */
        
-void go_m_1_new(){LCD_DispNew( 1, (const uchar*)"go_new", 1 );}
-void go_m_1_save(){
-	//uinOn();
-	LCD_DispNew( 1, (const uchar*)"go_save", 1 );
+void go_m_1_new(){
+	transportInit();
+	song_init();
+	midiInit();
+	msgBindDropEvent( 0, &transportOn );
+	msgWriteErr( 0, "Preparing...", MSG_SHORT );
 }
 void go_m_1_saveAs(){
+	uinBindSaveEvent( &verboseScript );
 	uinOn();
-	//LCD_DispNew( 1, (const uchar*)"go_saveAs", 1 );
+}
+void go_m_1_save(){
+	if( song_isTitled() ){
+		song_serialize();
+	}
+	else{
+		go_m_1_saveAs();
+	}
+}
+void go_m_1_open(){
+	transportInit();
+	msgBindDropEvent( 0, &transportOn );
+	msgWriteErr( 0, "Opening...", MSG_SHORT );
+	song_load();
 }
 void go_m_1_pResume(){ 
 	transportOn(); 
@@ -64,42 +130,82 @@ void go_m_1_recTop(){
 	record();
 }
 	void go_m_2_tempoSet(){
+		numinBindSaveEvent( &tempoScript );
 		numinOn();
-		//LCD_DispNew( 1, (const uchar*)"go_tempoSet", 1 );
 	}
 	void go_m_2_tempoTap(){
+		tapBindSaveEvent( &tapScript );
 		tapOn();
-		//LCD_DispNew( 1, (const uchar*)"go_tempoTap", 1 );
 	}
-//void go_m_1_tsig(){LCD_DispNew( 1, (const uchar*)"go_", 1 );}
 	void go_m_2_tsig44(){ 
 		setTimeSignature( FOUR_FOUR ); 
-		menuLeft(); 
+		menuLeftRoot();
+		menuWrite();
 	}
 	void go_m_2_tsig34(){ 
 		setTimeSignature( THREE_FOUR ); 
-		menuLeft(); 
+		menuLeftRoot();
+		menuWrite(); 
 	}
 	void go_m_2_tsig68(){ 
 		setTimeSignature( SIX_EIGHT ); 
-		menuLeft(); 
+		menuLeftRoot();
+		menuWrite();
 	}
-void go_m_1_quant(){LCD_DispNew( 1, (const uchar*)"go_quant", 1 );}
-	void go_m_2_q14(){LCD_DispNew( 1, (const uchar*)"go_q14", 1 );}
-	void go_m_2_q18(){LCD_DispNew( 1, (const uchar*)"go_q18", 1 );}
-	void go_m_2_q116(){LCD_DispNew( 1, (const uchar*)"go_q116", 1 );}
+void go_m_1_event(){
+	if( haveEvents()){ 
+		menuLeftRoot();
+		midiBindOffEvent( &menuOn );
+		eventDispOn();
+	}
+}
+	void go_m_2_q14(){ 
+		quantize( getTempo(), getTsig2(), 4 );
+		menuLeftRoot();
+		menuWrite();
+		//if( haveEvents()){
+			//quantize( getTempo(), getTsig2(), 4 );
+			//menuLeftRoot();
+			//menuWrite();
+		//}
+	}
+	void go_m_2_q18(){
+		quantize( getTempo(), getTsig2(), 8 );
+		menuLeftRoot();
+		menuWrite();
+		//if( haveEvents()){
+			//quantize( getTempo(), getTsig2(), 8 );
+			//menuLeftRoot();
+			//menuWrite();
+		//}
+	}
+	void go_m_2_q116(){
+		quantize( getTempo(), getTsig2(), 16 );
+		menuLeftRoot();
+		menuWrite();
+		//if( haveEvents()){
+			//quantize( getTempo(), getTsig2(), 16 );
+			//menuLeftRoot();
+			//menuWrite();
+		//}
+	}
 void go_m_1_metOn(){
 	toggleBeepOn();
-	menuLeft();
+	menuLeftRoot();
+	menuWrite();
 }
-void go_m_1_array(){LCD_DispNew( 1, (const uchar*)"go_LED", 1 );}
-
+void go_m_1_dispMS(){
+	toggleDispMS();
+	menuLeftRoot();
+	menuWrite();
+}
 /* Using pointers without malloc: each pointer needs a struct to point to */
 mStruct
-	m_0_song,//later
+	m_0_song,
 		m_1_new,
 		m_1_save,
 		m_1_saveAs,
+		m_1_open,
 	m_0_play,//later
 		m_1_pResume,
 		m_1_playTop,
@@ -115,13 +221,14 @@ mStruct
 			m_2_tsig34,
 			m_2_tsig68,
 	m_0_proc,
+		m_1_event,
 		m_1_quant,
 			m_2_q14,
 			m_2_q18,
 			m_2_q116,
 	m_0_opt,
 		m_1_metOn,
-		m_1_array;
+		m_1_dispMS;
 
 mStruct* LEFT;                      //current left screen
 mStruct* RIGHT;                     //current right screen
@@ -160,7 +267,13 @@ void menuRight(){
     RIGHT=LEFT->right;
     menuWrite();
 }
-
+void menuLeftRoot(){
+	while( LEFT->left ){
+		LEFT=LEFT->left;
+		RIGHT=LEFT->right;
+	}
+	//menuWrite();
+}
 void menuInit(){
     /* initialize layers */
     cp( m_0_song.name, " Song" );
@@ -180,7 +293,7 @@ void menuInit(){
 		m_1_new.right=0;
     
 		cp( m_1_save.name, " Save" );
-		m_1_save.value=&value_m_1_save;
+		m_1_save.value=0;
 		m_1_save.go=&go_m_1_save;
 		m_1_save.left=&m_0_song;
 		m_1_save.up=&m_1_new;
@@ -192,8 +305,16 @@ void menuInit(){
 		m_1_saveAs.go=&go_m_1_saveAs;
 		m_1_saveAs.left=&m_0_song;
 		m_1_saveAs.up=&m_1_save;
-		m_1_saveAs.down=0;
+		m_1_saveAs.down=&m_1_open;
 		m_1_saveAs.right=0;
+		
+		cp( m_1_open.name, " Open" );
+		m_1_open.value=0;
+		m_1_open.go=&go_m_1_open;
+		m_1_open.left=&m_0_song;
+		m_1_open.up=&m_1_saveAs;
+		m_1_open.down=0;
+		m_1_open.right=0;
     
     cp( m_0_play.name, " Play" );
     m_0_play.value=0;
@@ -313,13 +434,21 @@ void menuInit(){
     m_0_proc.left=0;
     m_0_proc.up=&m_0_time;
     m_0_proc.down=&m_0_opt;
-    m_0_proc.right=&m_1_quant;
+    m_0_proc.right=&m_1_event;
 
+		cp( m_1_event.name, " Events" );
+		m_1_event.value=&value_m_1_event;
+		m_1_event.go=&go_m_1_event;
+		m_1_event.left=&m_0_proc;
+		m_1_event.up=0;
+		m_1_event.down=&m_1_quant;
+		m_1_event.right=0;
+		
 		cp( m_1_quant.name, " Quant" );
-		m_1_quant.value=&value_m_1_quant;
+		m_1_quant.value=0;
 		m_1_quant.go=0;
 		m_1_quant.left=&m_0_proc;
-		m_1_quant.up=0;
+		m_1_quant.up=&m_1_event;
 		m_1_quant.down=0;
 		m_1_quant.right=&m_2_q14;
 		
@@ -360,16 +489,16 @@ void menuInit(){
 		m_1_metOn.go=&go_m_1_metOn;
 		m_1_metOn.left=&m_0_opt;
 		m_1_metOn.up=0;
-		m_1_metOn.down=&m_1_array;
+		m_1_metOn.down=&m_1_dispMS;
 		m_1_metOn.right=0;
-    
-		cp( m_1_array.name, " Lights" );
-		m_1_array.value=&value_m_1_array;
-		m_1_array.go=&go_m_1_array;
-		m_1_array.left=&m_0_opt;
-		m_1_array.up=&m_1_metOn;
-		m_1_array.down=0;
-		m_1_array.right=0;
+		
+		cp( m_1_dispMS.name, " M:B" );
+		m_1_dispMS.value=&value_m_1_dispMS;
+		m_1_dispMS.go=&go_m_1_dispMS;
+		m_1_dispMS.left=&m_0_opt;
+		m_1_dispMS.up=&m_1_metOn;
+		m_1_dispMS.down=0;
+		m_1_dispMS.right=0;
 		
     /* Set up screen pointers */
     LEFT=&m_0_song;
@@ -377,6 +506,7 @@ void menuInit(){
 }
 void menuOn(){
 	bBusInit();
+	msgUnbindDropEvent( 1 );//sometimes set by save actions
 	msgQueueOff( 0 );
 	msgQueueOff( 1 );
 	LCD_ClearScreen( 0 );

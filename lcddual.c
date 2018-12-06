@@ -1,38 +1,94 @@
+/****************************************************************************
+    This file is part of "Midi Record/Play/Overdub With 5-Pin Connections", 
+	"MRecord" for short, Copyright 2018, Dave S. Swanson.
+
+    MRecord is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    MRecord is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with MRecord.  If not, see <https://www.gnu.org/licenses/>.
+*****************************************************************************/
+
 #include <avr/io.h>
-#include <avr/interrupt.h>
 #include "UT.h"
 #include "lcddual.h"
 
-/*  A tool for message output to multiple screens.
-    
-    IMPORTANT: the way tick-sharing works is you make a task for each screen.
-    The tick function increments the screen just before it returns so the next
-    tick accesses the next screen.  Make sure NUM_SCRNS = number of tasks that
-    use the tick function
+/*  A tool for message output to multiple screens. Can handle 8 messages: 4 per
+	screen. You can set the timeout for the message to clear and allow the next 
+	message to display.
+	
+	You can bypass queue for simple message display 
+	
+	When queue is bypassed you can override the bypass for err message.  After
+	timeout, state is returned to bypass.
+	
+	This tool has more capacity than this program needs, but will be useful for 
+	other projects.  As it is, only the startup screen uses the full queue mode
 */
 
-/* =============================LCD functions=============================*/
-enum msgModes{ MSG_QUEUE, MSG_SIMPLE };
+/*===============LCD using message queue======================================*/
 
+/* forward declare 'private' functions for managing the queue */
+uchar incWrite( uchar wScreen );
+uchar incRead();
+uchar writeTo( uchar wScreen );
+uchar readFrom();
+void msgRead();
+void msgDrop();
 
+/*	Message Queue Globals:  Set LEN_Q = LEN_MSG * CAPACITY 
+	Understand the above before changing */
+#define LEN_Q		132
+#define LEN_MSG		33
+#define CAPACITY	4
+#define NUM_SCRNS	2
 
-/*-------------------------------------------------------------------------*/
+/*	Screen specifies the current read/display screen; 
+	Declare before LCD hardware functions to specify which screen
+	the function displays to.
+	Screen toggled by tick function 
+	For write-related functions the screen is specified by the caller
+*/
+uchar screen; 
+enum msg_states { WAIT, READ, HOLD, DROP };//period = 100 ms
+	
+typedef struct {
+	char Q[LEN_Q];
+	uchar msgDur[CAPACITY];
+	/* read/write indexes and queue status */
+	uchar enable;
+	uchar lock;
+	uchar iWrite;
+	uchar iRead;
+	uchar iDur;
+	uchar numInQ;
+	void (*dropFunct)();
+	
+	int state;
+} messageQ;
+
+messageQ msgQ[NUM_SCRNS];
+
+/* LCD hardware uses 8 data pins and 4 control pins, as specified here */
+
 #define DATA_BUS PORTC		// port connected to pins 7-14 of LCD display
 #define CONTROL_BUS PORTD	// port connected to pins 4 and 6 of LCD disp.
 #define RS0		4			// pin number of uC connected to pin 4 of LCD disp 0.
 #define E0		5			// pin number of uC connected to pin 6 of LCD disp 0.
 #define RS1		6			// pin number of uC connected to pin 4 of LCD disp 1.
 #define E1		7			// pin number of uC connected to pin 6 of LCD disp 1.
-/*-------------------------------------------------------------------------*/
-/*==========================================================================*/
-/*	Screen specifies the current read/display screen; 
-	Declare before LCD hardware functions to specify demux
-	Toggled by tick function 
-	Write screen specified by the caller to write-related functions
-*/
-uchar screen; 
-/*==========================================================================*/
+
+/*===============Direct LCD write (not using queue)===========================*/
+
 void LCD_ClearScreen( uchar wScreen ) {
+	if( msgQ[wScreen].lock ){ return; }
 	LCD_WriteCommand( 0x01, wScreen );
 }
 void LCD_init(void) {
@@ -64,6 +120,8 @@ void LCD_WriteCommand (uchar Command, uchar wScreen  ) {
 	delay_ms( 10 ); // ClearScreen requires 1.52ms to execute
 }
 void LCD_WriteData( uchar Data, uchar wScreen ) {
+	/* Writes a single character */
+	if( msgQ[wScreen].lock ){ return; }
 	if( wScreen ){
 		SET_BIT(CONTROL_BUS,RS1);
 		DATA_BUS = Data;
@@ -80,7 +138,13 @@ void LCD_WriteData( uchar Data, uchar wScreen ) {
 	}
 	delay_ms(1);
 }
+/*	LCD_Disp and LCD_DispNew do the same thing, except LCD_DispNew
+	clears the screen first.
+	Use LCD_Disp for writing multiple strings to a screen.
+	You can write, change the cursor position and write again
+	*/
 void LCD_DispNew( uchar column, const uchar* string, uchar wScreen ) {
+	if( msgQ[wScreen].lock ){ return; }
 	LCD_ClearScreen( wScreen );
 	uchar c = column;
 	while(*string) {
@@ -89,13 +153,15 @@ void LCD_DispNew( uchar column, const uchar* string, uchar wScreen ) {
 	}
 }
 void LCD_Disp( uchar column, const uchar* string, uchar wScreen ) {
+	if( msgQ[wScreen].lock ){ return; }
 	uchar c = column;
 	while(*string) {
 		LCD_Cursor( c++, wScreen );
 		LCD_WriteData( *string++, wScreen );
 	}
 }
-void LCD_Cursor( uchar column,  uchar wScreen ) {
+void LCD_Cursor( uchar column,  uchar wScreen ) {//set cursor position
+	if( msgQ[wScreen].lock ){ return; }
 	if ( column < 17 ) { // 16x1 LCD: column < 9
 		// 16x2 LCD: column < 17
 		LCD_WriteCommand( ( 0x80 + column - 1 ), wScreen );
@@ -106,57 +172,39 @@ void LCD_Cursor( uchar column,  uchar wScreen ) {
 	}
 }
 void setScreen( uchar scr ){
+	/* Sets the global index. Keep in mind, the tick function changes this */
 	screen=scr;
 }
-/* =============================msg functions=============================*/
-/* 'private' functions */
 
-uchar incWrite( uchar wScreen );
-uchar incRead();
-uchar currWrite( uchar wScreen );
-uchar currRead();
-uchar writeTo( uchar wScreen );
-uchar readFrom();
-void msgRead();
-void msgDrop();
+/*===============Set up queue and enable=============================================*/
 
-/* LCD display */
-/*	Message Queue Globals:  Set LEN_Q = LEN_MSG * CAPACITY */
-#define LEN_Q		132
-#define LEN_MSG		33
-#define CAPACITY	4
-#define NUM_SCRNS	2
-
-typedef struct {
-	uchar mode;		//Need this to keep from bogging down on busy messages
-	char Q[LEN_Q];
-	uchar msgDur[CAPACITY];
-	/* read/write indexes and queue status */
-	uchar iWrite;
-	uchar iRead;
-	uchar iDur;
-	uchar numInQ;
-	void (*dropFunct)();
-} messageQ;
-
-messageQ msgQ[NUM_SCRNS];
-
-	
 void msgInit(){
 	uchar i, j;
 	LCD_init();
 	/* Already zero on system start, but if init called later, need to zero */
 	for( i=0; i<NUM_SCRNS; i++ ){
-		msgQ[i].mode=MSG_QUEUE;
 		for( j=0; j<CAPACITY; j++ ){
 			msgQ[i].msgDur[j]=0;
 		}
+		msgQ[i].enable=1;
+		msgQ[i].lock=0;
 		msgQ[i].iRead=(uchar)-LEN_MSG;
 		msgQ[i].iWrite=(uchar)-LEN_MSG;
 		msgQ[i].numInQ=0;
 	}
 	screen=0;
 }
+void msgQueueOn( uchar wScreen ){
+	msgQ[wScreen].enable=1;
+}
+void msgQueueOff( uchar wScreen ){
+	msgQ[wScreen].lock=0;
+	msgClear( wScreen );
+	msgQ[wScreen].enable=0;
+}
+
+/*===============You can set a function to run when a message times out==============*/
+
 void msgBindDropEvent( uchar wScreen, void (*f)() ){
 	msgQ[wScreen].dropFunct=f;
 }
@@ -169,10 +217,12 @@ void msgUnbindAll(){
 		msgQ[i].dropFunct=0;
 	}
 }
-/* Increment index by 1 message length and return index */
+
+/*===============Private functions that manage queue indexing=========================*/
+
+/* Increment index by 1 message length and return index (wraps around on overrun) */
 uchar incWrite( uchar wScreen ){
 	msgQ[wScreen].iWrite+=LEN_MSG;
-	//printf("incWrite: msgQ[wScreen].iWrite=%d\n", msgQ[wScreen].iWrite );
 	if( msgQ[wScreen].iWrite==LEN_Q ){ 
 		msgQ[wScreen].iWrite=0; 
 	}
@@ -183,13 +233,6 @@ uchar incRead(){
 	if( msgQ[screen].iRead==LEN_Q ){ 
 		msgQ[screen].iRead=0; 
 	}
-	return msgQ[screen].iRead;
-}
-/* Return index without increment */
-uchar currWrite( uchar wScreen ){
-	return msgQ[wScreen].iWrite;
-}
-uchar currRead(){
 	return msgQ[screen].iRead;
 }
 /* Return index of next null write, or -1 if full */
@@ -214,6 +257,9 @@ uchar readFrom(){
 	return msgQ[screen].iRead;
 }
 
+/*===============Public:  Three ways of writing a message==============================*/
+
+/* Standard way: finds an index and copies to queue */
 void msgWrite( uchar wScreen, char buf[], uchar setTimeout ){
 	uchar iTo, iFrom;
 	/* Get an index to write to */
@@ -231,24 +277,8 @@ void msgWrite( uchar wScreen, char buf[], uchar setTimeout ){
 	}
 	msgQ[wScreen].numInQ++;
 }
-void msgWrite_stack( uchar wScreen, char buf1[], char buf2[], uchar setTimeout ){
-	uchar i=0, j=0;
-	char sbuf[33];
-	while( buf1[i] ){
-		sbuf[i]=buf1[i];
-		i++;
-	}
-	while(i<16){
-		sbuf[i]=' ';
-		i++;
-	}
-	while( buf2[j] ){
-		sbuf[i+j]=buf2[j];
-		j++;
-	}
-	sbuf[i+j]='\0';
-	msgWrite( wScreen, sbuf, setTimeout );
-}
+/*	Convert a number to string and display in dec, hex or binary 
+	Pass a string to include a label with the display */
 void msgWrite_num( uchar wScreen, int format, char label[], ushort num, uchar setTimeout ){//label max 9 characters
 	uchar i=0, j=0;
 	uchar nbuf[17];
@@ -280,61 +310,20 @@ void msgWrite_num( uchar wScreen, int format, char label[], ushort num, uchar se
 	sbuf[i+j]='\0';
 	msgWrite( wScreen, sbuf, setTimeout );
 }
-void msgQueueOn( uchar wScreen ){
-	msgQ[wScreen].mode=MSG_QUEUE;
+/* Error message: override queue-off state */
+void msgWriteErr( uchar wScreen, char buf[], uchar setTimeout ){
+	/* Knocks all messages off the queue, grabs the lock and holds it until timeout 
+		Sets msgRelease on timeout
+		Overrides disabled state 
+	*/
+	msgClear( wScreen );
+	msgQ[wScreen].enable=1;
+	msgQ[wScreen].lock=1;
+	msgQ[wScreen].state=WAIT;
+	//msgBindDropEvent( wScreen, &msgRelease );
+	msgWrite( wScreen, buf, setTimeout );
 }
-void msgQueueOff( uchar wScreen ){
-	msgQ[wScreen].mode=MSG_SIMPLE;
-}
-void simpleWrite( uchar wScreen, char buf[] ){
-	LCD_DispNew( (uchar)1, (const uchar* )buf, screen );
-}
-void simpleWrite_num( uchar wScreen, int format, ushort num ){
-	uchar nbuf[17];
-	switch( format ){
-		case NUM_HEX:
-			nToHex( num, nbuf );
-			break;
-		case NUM_BIN:
-			nToBin( num, nbuf );
-			break;
-		default:
-			nToChars( num, nbuf );
-			break;
-	}
-	LCD_ClearScreen( wScreen );
-	LCD_Disp( (uchar)1, (const uchar*)nbuf, wScreen );
-}
-void simpleWrite_float( uchar wScreen, float num ){
-	uchar nbuf[17];
-	//nToChars( (ushort)(num*100), nbuf );
-	fToChars( num, nbuf );
-	LCD_DispNew( (uchar)1, (const uchar*)nbuf, wScreen );
-}
-void simpleWrite_13( uchar wScreen, char buf1[], char buf2[] ){
-	//LCD_ClearScreen( wScreen );
-	LCD_Disp( (uchar)1, (const uchar* )buf1, wScreen );
-	LCD_Disp( (uchar)17, (const uchar* )buf2, wScreen );
-}
-void simpleWrite_123( uchar wScreen, char buf1[], char buf2[], char buf3[] ){
-	//LCD_ClearScreen( wScreen );
-	LCD_Disp( (uchar)1, (const uchar* )buf1, wScreen );
-	LCD_Disp( (uchar)9, (const uchar* )buf2, wScreen );
-	LCD_Disp( (uchar)17, (const uchar* )buf3, wScreen );
-}
-void simpleWrite_1234( uchar wScreen, char buf1[], char buf2[], char buf3[], char buf4[] ){
-	//LCD_ClearScreen( wScreen );
-	LCD_Disp( (uchar)1, (const uchar* )buf1, wScreen );
-	LCD_Disp( (uchar)9, (const uchar* )buf2, wScreen );
-	LCD_Disp( (uchar)17, (const uchar* )buf3, wScreen );
-	LCD_Disp( (uchar)25, (const uchar* )buf4, wScreen );
-}
-void simpleClear( uchar wScreen ){
-	if( msgQ[wScreen].mode==MSG_SIMPLE){
-		LCD_ClearScreen( wScreen );
-	}
-}
-
+/* Private function that sends a queued message to screen */
 void msgRead(){
 	uchar iFrom, iTo, col=1;
 	char buf[33];
@@ -347,15 +336,19 @@ void msgRead(){
 		}
 		iFrom++;
 	}
-	LCD_DispNew( col, (const uchar* )buf, screen );
+	if( msgQ[screen].lock ){
+		msgQ[screen].lock=0;
+		LCD_DispNew( col, (const uchar* )buf, screen );
+		msgQ[screen].lock=1;
+	}
+	else{
+		LCD_DispNew( col, (const uchar* )buf, screen );
+	}
 	/* Set index where display duration is stored */
 	msgQ[screen].iDur=msgQ[screen].iRead/LEN_MSG;
 }
-/* "Public" functions */
-uchar msgIsLocked( uchar wScreen ){
-	/* True when state machine is stuck in HOLD state by FOREVER */
-	return msgQ[wScreen].msgDur[msgQ[wScreen].iRead]==FOREVER;
-}
+
+
 void msgDrop(){
 	/* Deactivate current message; useful for clearing FOREVER message */
 	msgQ[screen].Q[msgQ[screen].iRead]='\0';
@@ -377,7 +370,11 @@ void msgClear( uchar wScreen ){
 	msgQ[wScreen].numInQ=0;
 	LCD_ClearScreen( screen );
 }
-
+/* Functions to get queue status */
+uchar msgIsLocked( uchar wScreen ){
+	/* True when state machine is stuck in HOLD state by FOREVER */
+	return msgQ[wScreen].msgDur[msgQ[wScreen].iRead]==FOREVER;
+}
 uchar fullQ( uchar wScreen ){
 	return msgQ[wScreen].numInQ==CAPACITY;
 }
@@ -388,96 +385,81 @@ uchar numInQ( uchar wScreen ){
 	return msgQ[screen].numInQ;
 }
 /* Call on init */	
-void dispWelcomeScreen( uchar wScreen ){
+void dispWelcomeScreen(){
 	msgWrite( 0, "    Welcome!", MSG_LONG );
 	msgWrite( 1, "  Programmable", MSG_SHORT );
 	msgWrite( 1, "      Midi", MSG_SHORT );
 	msgWrite( 1, "    Sequencer", MSG_SHORT );
 }
+
 /* State machine tick function */
-enum msg_states { MSG_INIT, MSG_WAIT, MSG_READ, MSG_HOLD, MSG_DROP };//period = 100 ms
-int message_tick( int state ){
-	if( msgQ[screen].mode==MSG_SIMPLE ){ return state; }
+void message_tick(){
+	screen=!screen;//toggle index between 0 and 1
+
+	if( !msgQ[screen].enable ){ return; }
 	static uchar localTimer[NUM_SCRNS]={2,2};
-	switch (state) {//state
-		case BYP:
-			return state;
-		case MSG_INIT:
-			state = MSG_WAIT;
-			break;
-		case MSG_WAIT:
+	switch (msgQ[screen].state) {
+		case WAIT://Stays here until there is a message
 			if( !emptyQ() ){
-				state = MSG_READ;
+				msgQ[screen].state = READ;
 			}
 			break;
-		case MSG_READ:
-			state = MSG_HOLD;
+		case READ://READ sends msg to display
+			msgQ[screen].state = HOLD;
 			break;
-		case MSG_HOLD:
+		case HOLD://HOLD manages the timeout
 			if( msgQ[screen].msgDur[msgQ[screen].iDur]==FOREVER ){
-				/* Forever can be externally cleared using msgDrop() */
-				return state;
+				/*	If Forever is set, don't bother to count.
+					Forever can be externally cleared using msgDrop() */
+				return;
 			}
 			if( emptyQ() ){
 				/* Someone cleared the messages */
-				state = MSG_WAIT;
+				msgQ[screen].state = WAIT;
 			}
 			else if( msgQ[screen].msgDur[msgQ[screen].iDur] <= localTimer[screen] ){
 				/* Message expiring */
-				state = MSG_DROP;
+				msgQ[screen].state = DROP;
 			}
 			localTimer[screen]++;
 			break;
-		case MSG_DROP:
+		case DROP://Either display another message or go to wait sate
 			if( emptyQ() ){
-				state = MSG_WAIT;
-				if( msgQ[screen].dropFunct ){
-					msgQ[screen].dropFunct();
-				}
+				msgQ[screen].state = WAIT;
 			}
 			else{
-				state = MSG_READ;
+				msgQ[screen].state = READ;
 			}
 			break;
 		default:
-			state = MSG_WAIT;
+			msgQ[screen].state = WAIT;
 			break;
 	}
-	switch(state) {//action
-		case MSG_INIT:
-		case MSG_WAIT:
-		case MSG_HOLD:
+	switch(msgQ[screen].state) {//action
+		case WAIT:
+		case HOLD:
 			break;
-		case MSG_READ:
+		case READ:
 			/* Inc read index, display message and set index to check dur */
 			msgRead();
 			break;			
-		case MSG_DROP:
+		case DROP:
+			/* Case: an err message is finishing; return to prev state */
+			if( msgQ[screen].lock ){
+				msgQ[screen].lock=0;
+				msgQ[screen].enable=0;
+				msgQ[screen].state=WAIT;
+			}
 			msgDrop();
-			localTimer[screen]=2;
+			localTimer[screen]=2;			
+			if( msgQ[screen].dropFunct ){
+				msgQ[screen].dropFunct();
+			}
 			break;
 		default:
 			break;
 	}
-	screen=!screen;
-	return state;
 }
 
-void lcdTest() {// MSG_INIT, MSG_WAIT, MSG_READ, MSG_HOLD, MSG_DROP
-	//uchar i;
-	//int state0=-1;
-	//int state1=-1;
-	//for( i=0; i<25; i++ ){
-		//printf( "%d: state0=%d,state1=%d =====\n", i, state0, state1 );
-		//state0=message_tick( state0 );
-		//state1=message_tick( state1 );
-		//if( i==1){
-			//printf("write\n" );
-			//msgWrite( 0, "Screen 0 message A", 4 );
-			//msgWrite( 0, "Screen 0 message B", 2 );
-			//msgWrite( 1, "Screen 1 message A", 2 );
-			//msgWrite( 0, "Screen 0 message C", 4 );
-			//msgWrite( 1, "Screen 1 message B", 3 );	
-		//}
-	//}
-}
+/*
+*/

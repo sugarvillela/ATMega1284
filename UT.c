@@ -1,6 +1,25 @@
+/****************************************************************************
+    This file is part of "Midi Record/Play/Overdub With 5-Pin Connections", 
+	"MRecord" for short, Copyright 2018, Dave S. Swanson.
+
+    MRecord is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    MRecord is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with MRecord.  If not, see <https://www.gnu.org/licenses/>.
+*****************************************************************************/
+
 #include "UT.h"
 #include <avr/io.h>
 #include <avr/interrupt.h>
+#include "lcddual.h"
 
 /*	Abstracts the IO settings; Specify in/out as 4 8-char strings of i or o  */
 void setIO( char ioa[], char iob[], char ioc[], char iod[]){
@@ -44,6 +63,15 @@ unsigned char len( const char str[] ){
 		}
 	}
 	return i;
+}
+/* returns a==b */
+unsigned char sameString( char a[], char b[] ){
+	unsigned char i=0;
+	while( a[i] ){
+		if( a[i]!=b[i] ){ return 0; }//catches b shorter
+		i++;
+	}
+	return b[i]=='\0';//catches b longer
 }
 
 void cp( char to[], char from[] ){
@@ -191,15 +219,51 @@ void onOff( uchar onOff, uchar buf[] ){
 	else		{ buf[0]='O'; buf[1]='f'; buf[2]='f'; buf[3]='\0'; }
 }
 
+void progress( uchar state, ushort n ){
+	/*	This is sort of an easter egg...
+		state 0: start progress bar; pass loop length via 'n' parameter
+		state 1: display progress bar; pass current 'i' via 'n' parameter
+		state 2: end progress bar; clean up
+	*/
+    static char bar[9];
+    static uchar i, segment;
+    static ushort inc;
+    switch( state ){
+        case 0://start
+            cli();//stop timer and USART interrupts
+            LCD_ClearScreen( 1 );
+            inc=n/8;
+            segment=2;
+			LCD_Disp( 1, (const uchar*)"Working ", 1 );
+			delay_ms( 200 );//guarantee minimally visible speed
+            return;
+        case 1://progress
+            if( n<inc ){
+                return;
+            }
+            for( i=0;i<segment && i<9;i++){
+                bar[i]='=';
+            }
+            bar[i]='\0';
+			LCD_Disp( 9, (const uchar*)bar, 1 );
+            segment+=2;
+            inc+=inc;
+			delay_ms( 200 );
+            return;
+        default://finish
+            segment=4;
+            LCD_ClearScreen( 1 );
+            sei();//restart timer and USART interrupts
+    }
+}
 /* Code as given */
 /* From io.c */
-void delay_ms(int miliSec) //for 8 Mhz crystal
-{
-	int i,j;
-	for(i=0;i<miliSec;i++)
-	for(j=0;j<775;j++)
-	{
-		asm("nop");
+void delay_ms(int miliSec){ //for 8 Mhz crystal
+	int i, j;
+	for(i=0;i<miliSec;i++){
+		for(j=0;j<775;j++){
+			asm("nop");
+		}
 	}
 }
 
